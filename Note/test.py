@@ -83,7 +83,6 @@ classified-table__row (ensemble of all information)
 
 #State of the buildin
 
-
 #Type of property #Subtype of property
 
 #faire un filtre que s'adapte a chaque redemarage afain de metre a jour tout les filtres existant
