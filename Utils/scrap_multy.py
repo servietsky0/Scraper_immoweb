@@ -4,6 +4,7 @@ import re
 import pandas as pd
 from typing import List, Dict
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class ImmowebScraper:
     def __init__(self, base_url: str, headers: Dict[str, str], output_file: str):
@@ -12,25 +13,23 @@ class ImmowebScraper:
         self.output_file = output_file
 
     def get_price(self, url: str) -> int:
+        print(f"{url}")
         response = requests.get(url, headers=self.headers)
         soup = bs(response.content, 'html.parser')
         price = soup.find('span', class_='sr-only').text
         return price
 
-    def get_link(self) -> str:
-        response = requests.get(self.base_url, headers=self.headers)
+    def get_links(self, page: int) -> List[str]:
+        response = requests.get(f'{self.base_url}&page={page}&orderBy=relevance', headers=self.headers)
         soup = bs(response.content, 'html.parser')
-        link = soup.find('a', class_="card__title-link")
-        return link['href']
+        links = [a['href'] for a in soup.find_all('a', class_="card__title-link")]
+        return links
 
-    # il ne fonctionnera pas dans un boucle car on prend juste le premier
-    def get_code(self) -> str:
+    def get_code(self, soup) -> str:
         pattern = r"[0-9]{4}"
-        response = requests.get(self.base_url, headers=self.headers)
-        soup = bs(response.content, 'html.parser')
         code = soup.find('p', class_="card__information--locality").text
         code_num = re.search(pattern, code)
-        return code_num.group(0)
+        return code_num.group(0) if code_num else None
 
     def save_init_dic_building(
             self,
@@ -48,11 +47,11 @@ class ImmowebScraper:
             "Subtype of property": type_and_subtype_of_property[1],
             "Price": price,
             "Type of sale": type_of_sale,
-            "Bedrooms": None,
-            "Living area": None,
+            "Bedrooms": 0,
+            "Living area": 0,
             "Kitchen type": None,
             "Furnished": None,
-            "How many fireplaces?": None,
+            "How many fireplaces?": 0,
             "Terrace surface": None,
             "Garden surface": None,
             "Surface of the plot": None,
@@ -141,15 +140,27 @@ class ImmowebScraper:
         other = self.get_other_info(soup)
         self.save_init_dic_building(localite_cp, [None, None], price, "None", other, "None", self.output_file)
 
-    def run_scraper(self, pages: int) -> None:
-        for i in range(pages):
-            print(f"Scraping page {i}")
-            link = requests.get(f'{self.base_url}&page={i}&orderBy=relevance', headers=self.headers)
-            soup = bs(link.content, 'html.parser')
-            page_links = soup.find_all('a', class_='card__title-link')
-            for l in page_links:
-                print(l.get("href"))
-                self.scrap([], self.get_price(l.get("href")), l.get("href"))
+    def scrape_links(self, links: List[str]) -> None:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(self.scrap, [], self.get_price(link), link) for link in links]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"An error occurred: {e}")
+
+    def run_scraper(self, total_pages: int, pages_per_batch: int) -> None:
+        for i in range(0, total_pages, pages_per_batch):
+            page_range = range(i, min(i + pages_per_batch, total_pages))
+            all_links = []
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = [executor.submit(self.get_links, page) for page in page_range]
+                for future in as_completed(futures):
+                    try:
+                        all_links.extend(future.result())
+                    except Exception as e:
+                        print(f"An error occurred while fetching links: {e}")
+            self.scrape_links(all_links)
 
 if __name__ == "__main__":
     base_url = 'https://www.immoweb.be/en/search/house/for-sale?countries=BE'
@@ -158,4 +169,4 @@ if __name__ == "__main__":
     }
     output_file = "all.xlsx"
     scraper = ImmowebScraper(base_url, headers, output_file)
-    scraper.run_scraper(50)
+    scraper.run_scraper(total_pages=50, pages_per_batch=5)
